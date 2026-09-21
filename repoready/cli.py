@@ -41,8 +41,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if exc.code is None else int(exc.code)
 
     if args.command == "doctor":
-        print("doctor: not implemented yet", file=sys.stderr)
-        return 2
+        from repoready.doctor import run_doctor
+
+        return run_doctor()
 
     if args.command == "check":
         print("check: not implemented yet", file=sys.stderr)
