@@ -87,6 +87,30 @@ class LocalBackendTest(unittest.TestCase):
             self.assertEqual(outcome.blocked_reason, "timeout")
             self.assertLess(elapsed, 3.0)
 
+    def test_timeout_terminates_child_that_ignores_sigbreak(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = LocalBackend()
+            backend.prepare(Path(tmp))
+            code = (
+                "import signal, time; "
+                "signal.signal(getattr(signal, 'SIGBREAK', signal.SIGTERM), "
+                "signal.SIG_IGN); "
+                "time.sleep(10)"
+            )
+            started = time.monotonic()
+            outcome = backend.execute(
+                make_step(f'"{sys.executable}" -c "{code}"'),
+                Limits(timeout_s=1),
+                network=True,
+            )
+            elapsed = time.monotonic() - started
+            self.assertIsNone(outcome.exit_code)
+            self.assertIn(
+                outcome.blocked_reason,
+                ("timeout", "timeout_termination_unconfirmed"),
+            )
+            self.assertLess(elapsed, 3.0)
+
 
 if __name__ == "__main__":
     unittest.main()
