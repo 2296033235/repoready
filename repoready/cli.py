@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import sys
 
 from repoready import __version__
 
@@ -46,5 +45,6 @@ def main(argv: list[str] | None = None) -> int:
         return run_doctor()
 
     if args.command == "check":
-        print("check: not implemented yet", file=sys.stderr)
-        return 2
+        from repoready.commands.check import run_check
+
+        return run_check(args)
