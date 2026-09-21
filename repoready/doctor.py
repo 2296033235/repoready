@@ -40,7 +40,10 @@ def interpret_docker_output(returncode: int, stdout: str, stderr: str) -> Docker
             "Permission denied: this account may not talk to the Docker engine. "
             "Add it to the docker-users group, then restart Docker Desktop."
         )
-    elif "cannot find the file" in lowered or "docker daemon is running" in lowered:
+    elif (
+        "cannot find the file" in lowered
+        or "is the docker daemon running" in lowered
+    ):
         hint = (
             "The Docker engine is not running. Start Docker Desktop and wait until "
             "it reports 'Engine running'."

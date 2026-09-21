@@ -24,7 +24,17 @@ class InterpretDockerOutputTest(unittest.TestCase):
             "error during connect: The system cannot find the file specified.",
         )
         self.assertFalse(status.daemon_reachable)
-        self.assertIn("engine", status.hint.lower())
+        self.assertIn("start docker desktop", status.hint.lower())
+
+    def test_canonical_daemon_down_gets_start_hint(self):
+        status = interpret_docker_output(
+            1,
+            "",
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. "
+            "Is the docker daemon running?",
+        )
+        self.assertFalse(status.daemon_reachable)
+        self.assertIn("start docker desktop", status.hint.lower())
 
     def test_unexpected_failure_still_produces_a_hint(self):
         status = interpret_docker_output(1, "", "some unexpected failure")
