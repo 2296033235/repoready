@@ -1,4 +1,4 @@
-# repoready
+# repoready:开源项目验证工具
 
 Verify open-source onboarding instructions by actually running them.
 
