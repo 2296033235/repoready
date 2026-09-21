@@ -3,26 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-PYTHON_SIGNALS = (
-    "pyproject.toml",
-    "requirements.txt",
-    "requirements-dev.txt",
-    "setup.py",
-    "setup.cfg",
-    "poetry.lock",
-    "Pipfile",
-    "environment.yml",
-    "tox.ini",
-)
-
-OTHER_LANGUAGE_SIGNALS = {
-    "package.json": "node",
-    "pom.xml": "java",
-    "build.gradle": "java",
-    "go.mod": "go",
-    "Cargo.toml": "rust",
-}
-
 PACKAGE_MANAGER_PRECEDENCE = (
     ("poetry.lock", "poetry"),
     ("Pipfile", "pipenv"),
@@ -32,6 +12,23 @@ PACKAGE_MANAGER_PRECEDENCE = (
     ("setup.py", "pip"),
     ("setup.cfg", "pip"),
 )
+
+PYTHON_SIGNAL_EXTRAS = (
+    "requirements-dev.txt",
+    "tox.ini",
+)
+
+PYTHON_SIGNALS = (
+    tuple(name for name, _ in PACKAGE_MANAGER_PRECEDENCE) + PYTHON_SIGNAL_EXTRAS
+)
+
+OTHER_LANGUAGE_SIGNALS = {
+    "package.json": "node",
+    "pom.xml": "java",
+    "build.gradle": "java",
+    "go.mod": "go",
+    "Cargo.toml": "rust",
+}
 
 
 @dataclass(frozen=True)
