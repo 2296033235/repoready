@@ -1,5 +1,6 @@
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -50,17 +51,41 @@ class LocalBackendTest(unittest.TestCase):
             )
             self.assertIn("FOUND", outcome.stdout)
 
+    def test_network_false_blocks_before_command_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = LocalBackend()
+            backend.prepare(root)
+            marker = root / "network-ran.txt"
+            code = (
+                "from pathlib import Path; "
+                "Path('network-ran.txt').write_text('ran')"
+            )
+            outcome = backend.execute(
+                make_step(f'"{sys.executable}" -c "{code}"'),
+                Limits(),
+                network=False,
+            )
+            self.assertIsNone(outcome.exit_code)
+            self.assertEqual(
+                outcome.blocked_reason, "network_isolation_unavailable"
+            )
+            self.assertFalse(marker.exists())
+
     def test_timeout_is_reported_as_blocked_not_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
             backend = LocalBackend()
             backend.prepare(Path(tmp))
+            started = time.monotonic()
             outcome = backend.execute(
                 make_step(f'"{sys.executable}" -c "import time; time.sleep(5)"'),
                 Limits(timeout_s=1),
                 network=True,
             )
+            elapsed = time.monotonic() - started
             self.assertIsNone(outcome.exit_code)
             self.assertEqual(outcome.blocked_reason, "timeout")
+            self.assertLess(elapsed, 3.0)
 
 
 if __name__ == "__main__":
