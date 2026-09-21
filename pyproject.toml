@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repoready"
+version = "0.1.0"
+description = "Verify open-source onboarding instructions by actually running them."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+repoready = "repoready.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["repoready*"]
