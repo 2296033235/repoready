@@ -126,6 +126,38 @@ class FullLogPersistenceTest(unittest.TestCase):
             )
             self.assertIn("MISSING: libexample", output_text(result, out_dir))
 
+    def test_reused_log_directory_removes_stale_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            logs = out_dir / "logs"
+            logs.mkdir()
+            stale_stdout = logs / "step-99-stdout.log"
+            stale_stderr = logs / "step-99-stderr.log"
+            stale_stdout.write_text("stale stdout", encoding="utf-8")
+            stale_stderr.write_text("stale stderr", encoding="utf-8")
+
+            backend = FakeBackend(
+                [outcome(None, stdout="fresh", blocked="preflight failed")]
+            )
+            results = run_steps(
+                [make_step(1, "make install")],
+                backend,
+                Limits(),
+                network=True,
+                log_dir=out_dir,
+            )
+
+            self.assertFalse(stale_stdout.exists())
+            self.assertFalse(stale_stderr.exists())
+            self.assertEqual(
+                (out_dir / results[0].stdout_log).read_text(encoding="utf-8"),
+                "fresh",
+            )
+            self.assertEqual(
+                (out_dir / results[0].stderr_log).read_text(encoding="utf-8"),
+                "",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

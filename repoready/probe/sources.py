@@ -9,38 +9,13 @@ from repoready.probe.detect import ProjectProfile
 WORKFLOW_GLOBS = ("*.yml", "*.yaml")
 README_NAMES = ("README.md", "README.rst", "CONTRIBUTING.md")
 SHELL_LANGUAGES = {"bash", "sh", "shell", "console", "zsh", ""}
-MAINTENANCE_KEYWORDS = {
-    "changelog",
-    "close",
-    "deploy",
-    "deployment",
-    "issue",
-    "label",
-    "lock",
-    "maintenance",
-    "publish",
-    "release",
-    "stale",
-}
-MAINTENANCE_COMMAND = re.compile(
-    r"^(?:"
-    r"gh\s+(?:api|issue|pr|release)\b|"
-    r"git\s+(?:push|tag)\b|"
-    r"docker\s+push\b|"
-    r"(?:npm|yarn)\s+publish\b|"
-    r"twine\s+upload\b|"
-    r"cargo\s+publish\b|"
-    r"(?:kubectl|helm|terraform)\b|"
-    r"(?:aws|gcloud|az)\b|"
-    r"(?:deploy|publish|release)\b"
-    r")",
-    re.IGNORECASE,
-)
 
 RUN_KEY = re.compile(r"^(?P<indent>[ \t]*)(?:-[ \t]+)?run:[ \t]*(?P<rest>.*)$")
 STEPS_KEY = re.compile(r"^(?P<indent>[ \t]*)steps:[ \t]*(?P<rest>.*)$")
 BLOCK_SCALAR = re.compile(r"^(?P<style>[|>])(?P<modifiers>[0-9+-]*)$")
 COMMAND_PREFIXES = (
+    "cd ",
+    "export ",
     "pip ",
     "python ",
     "python3 ",
@@ -65,28 +40,6 @@ def _workflow_files(root: Path) -> list[Path]:
     for pattern in WORKFLOW_GLOBS:
         files.extend(sorted(workflow_dir.glob(pattern)))
     return files
-
-
-def _workflow_is_maintenance(path: Path, lines: list[str]) -> bool:
-    stem_words = set(re.split(r"[^a-zA-Z0-9]+", path.stem.lower()))
-    if stem_words & MAINTENANCE_KEYWORDS:
-        return True
-    for line in lines[:50]:
-        match = re.match(r"^name:[ \t]*(?P<name>.*)$", line)
-        if match:
-            name_words = set(
-                re.split(r"[^a-zA-Z0-9]+", match.group("name").strip().strip("'\"").lower())
-            )
-            return bool(name_words & MAINTENANCE_KEYWORDS)
-    return False
-
-
-def _is_maintenance_command(command: str) -> bool:
-    for line in command.splitlines():
-        stripped = line.strip()
-        if stripped and MAINTENANCE_COMMAND.match(stripped):
-            return True
-    return False
 
 
 def _fold_block(lines: list[str]) -> str:
@@ -148,55 +101,12 @@ def _extract_github_workflows(root: Path) -> list[Step]:
     for path in _workflow_files(root):
         rel = path.relative_to(root).as_posix()
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        if _workflow_is_maintenance(path, lines):
-            continue
         steps_indent: int | None = None
-        jobs_indent: int | None = None
-        job_indent: int | None = None
-        current_job: str | None = None
-        current_job_excluded = False
         index = 0
         while index < len(lines):
             line = lines[index]
             if line.strip():
                 indent = len(line) - len(line.lstrip())
-                jobs_match = re.match(
-                    r"^(?P<indent>[ \t]*)jobs:[ \t]*(?P<rest>.*)$", line
-                )
-                if jobs_match:
-                    jobs_indent = len(jobs_match.group("indent"))
-                    job_indent = None
-                    current_job = None
-                    current_job_excluded = False
-                    index += 1
-                    continue
-                if jobs_indent is not None and indent <= jobs_indent:
-                    jobs_indent = None
-                    job_indent = None
-                    current_job = None
-                    current_job_excluded = False
-                elif jobs_indent is not None:
-                    job_match = re.match(
-                        r"^(?P<indent>[ \t]*)(?P<key>[A-Za-z0-9_.-]+):"
-                        r"[ \t]*(?P<rest>.*)$",
-                        line,
-                    )
-                    if job_match and (
-                        job_indent is None or indent <= job_indent
-                    ):
-                        job_indent = indent
-                        current_job = job_match.group("key")
-                        current_job_excluded = _label_is_maintenance(current_job)
-                    elif (
-                        job_match
-                        and indent > job_indent
-                        and steps_indent is None
-                        and job_match.group("key") == "name"
-                    ):
-                        current_job_excluded = (
-                            current_job_excluded
-                            or _label_is_maintenance(job_match.group("rest"))
-                        )
                 if steps_indent is not None and indent <= steps_indent:
                     steps_indent = None
                 steps_match = STEPS_KEY.match(line)
@@ -212,15 +122,13 @@ def _extract_github_workflows(root: Path) -> list[Step]:
             if steps_indent is None or len(match.group("indent")) <= steps_indent:
                 index += 1
                 continue
-            if current_job_excluded:
-                index += 1
-                continue
 
             rest = match.group("rest").strip()
             block_match = BLOCK_SCALAR.match(rest)
             if rest and not block_match:
-                if not _is_maintenance_command(rest):
-                    found.append((rest, rel, index + 1))
+                command = _shell_command(rest)
+                if command is not None:
+                    found.append((command, rel, index + 1))
                 index += 1
                 continue
 
@@ -232,7 +140,8 @@ def _extract_github_workflows(root: Path) -> list[Step]:
                     len(match.group("indent")),
                     block_match.group("style") + block_match.group("modifiers"),
                 )
-                if command and not _is_maintenance_command(command):
+                command = _shell_command(command)
+                if command is not None:
                     found.append((command, rel, run_line))
                 continue
             index += 1
@@ -241,11 +150,6 @@ def _extract_github_workflows(root: Path) -> list[Step]:
         Step(id=0, command=command, source=SourceRef(kind="ci", path=path, line=line))
         for command, path, line in found
     ]
-
-
-def _label_is_maintenance(label: str) -> bool:
-    words = set(re.split(r"[^a-zA-Z0-9]+", label.lower()))
-    return bool(words & MAINTENANCE_KEYWORDS)
 
 
 def _extract_gitlab(root: Path) -> list[Step]:
@@ -269,7 +173,6 @@ def _extract_gitlab(root: Path) -> list[Step]:
     }
     found: list[tuple[str, str, int]] = []
     current_job: str | None = None
-    current_excluded = False
     index = 0
     while index < len(lines):
         line = lines[index]
@@ -285,7 +188,6 @@ def _extract_gitlab(root: Path) -> list[Step]:
             key = top_level.group("key")
             if key not in reserved:
                 current_job = key
-                current_excluded = _label_is_maintenance(key)
 
         script_match = re.match(
             r"^(?P<indent>[ \t]*)(?:-[ \t]+)?"
@@ -295,7 +197,6 @@ def _extract_gitlab(root: Path) -> list[Step]:
         if (
             script_match is None
             or current_job is None
-            or current_excluded
         ):
             index += 1
             continue
@@ -311,12 +212,14 @@ def _extract_gitlab(root: Path) -> list[Step]:
                 parent_indent,
                 block_match.group("style") + block_match.group("modifiers"),
             )
-            if command and not _is_maintenance_command(command):
+            command = _shell_command(command)
+            if command is not None:
                 found.append((command, rel, line_number))
             continue
         if rest:
-            if not _is_maintenance_command(rest):
-                found.append((rest, rel, index + 1))
+            command = _shell_command(rest)
+            if command is not None:
+                found.append((command, rel, index + 1))
             index += 1
             continue
 
@@ -333,7 +236,8 @@ def _extract_gitlab(root: Path) -> list[Step]:
             if len(item.group("indent")) <= parent_indent:
                 break
             command = item.group("command").strip()
-            if command and not _is_maintenance_command(command):
+            command = _shell_command(command)
+            if command is not None:
                 found.append((command, rel, index + 1))
             index += 1
 
@@ -351,27 +255,13 @@ def _extract_azure(root: Path) -> list[Step]:
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     found: list[tuple[str, str, int]] = []
     index = 0
-    current_job: str | None = None
-    current_job_excluded = False
-    job_key = re.compile(
-        r"^(?P<indent>[ \t]*)-[ \t]+job:[ \t]*(?P<name>.*)$"
-    )
     step_key = re.compile(
         r"^(?P<indent>[ \t]*)-[ \t]+"
         r"(?P<key>script|bash|sh|pwsh|powershell):[ \t]*(?P<rest>.*)$"
     )
     while index < len(lines):
-        job_match = job_key.match(lines[index])
-        if job_match:
-            current_job = job_match.group("name").strip().strip("'\"")
-            current_job_excluded = _label_is_maintenance(current_job)
-            index += 1
-            continue
         match = step_key.match(lines[index])
         if match is None:
-            index += 1
-            continue
-        if current_job is not None and current_job_excluded:
             index += 1
             continue
         rest = match.group("rest").strip()
@@ -384,11 +274,14 @@ def _extract_azure(root: Path) -> list[Step]:
                 len(match.group("indent")),
                 block_match.group("style") + block_match.group("modifiers"),
             )
-            if command and not _is_maintenance_command(command):
+            command = _shell_command(command)
+            if command is not None:
                 found.append((command, rel, line_number))
             continue
-        if rest and not _is_maintenance_command(rest):
-            found.append((rest, rel, index + 1))
+        if rest:
+            command = _shell_command(rest)
+            if command is not None:
+                found.append((command, rel, index + 1))
         index += 1
 
     return [
@@ -409,7 +302,8 @@ def _shell_command(raw: str) -> str | None:
     command = raw.strip().lstrip("$ ").strip()
     if not command or command.startswith("#"):
         return None
-    if not command.startswith(COMMAND_PREFIXES):
+    allowed_verbs = {prefix.strip() for prefix in COMMAND_PREFIXES}
+    if command.split(maxsplit=1)[0] not in allowed_verbs:
         return None
     return command
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from repoready.models import Step, StepResult
@@ -59,6 +60,14 @@ def _skipped_result(step: Step) -> StepResult:
     )
 
 
+def _reset_capture_dir(capture_dir: Path) -> None:
+    if capture_dir.is_symlink() or capture_dir.is_file():
+        capture_dir.unlink()
+    elif capture_dir.exists():
+        shutil.rmtree(capture_dir)
+    capture_dir.mkdir(parents=True, exist_ok=True)
+
+
 def run_steps(
     steps: list[Step],
     backend: SandboxBackend,
@@ -78,7 +87,7 @@ def run_steps(
     capture_dir: Path | None = None
     if log_dir is not None:
         capture_dir = Path(log_dir) / "logs"
-        capture_dir.mkdir(parents=True, exist_ok=True)
+        _reset_capture_dir(capture_dir)
     try:
         for step in steps:
             if halted:

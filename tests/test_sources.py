@@ -96,7 +96,7 @@ class ExtractStepsTest(unittest.TestCase):
             self.assertEqual([s.command for s in steps], ["pytest -q"])
             self.assertEqual(steps[0].source.line, 3)
 
-    def test_maintenance_workflow_commands_are_not_extracted(self):
+    def test_non_allowlisted_issue_workflow_yields_no_steps(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write(
@@ -106,27 +106,40 @@ class ExtractStepsTest(unittest.TestCase):
                 "jobs:\n"
                 "  close:\n"
                 "    steps:\n"
-                "      - run: gh issue close 123\n"
-                "      - run: gh issue lock 123\n",
+                "      - run: |\n"
+                "          gh issue close $ISSUE_URL \\\n"
+                "            --comment \"Closed as stale\" \\\n"
+                "            --reason completed\n"
+                "          gh issue lock $ISSUE_URL --reason off_topic \\\n"
+                "            --comment \"Locked as stale\"\n",
             )
             write(
                 root,
-                ".github/workflows/ci.yml",
+                ".github/workflows/run-tests.yml",
                 "jobs:\n"
                 "  test:\n"
                 "    steps:\n"
-                "      - run: pip install -e .\n"
-                "      - run: pytest -q\n",
+                "      - run: make\n"
+                "      - run: python -m pip install -r requirements.txt\n",
             )
 
             steps = extract_steps(root, detect_project(root))
 
             self.assertEqual(
                 [s.command for s in steps],
-                ["pip install -e .", "pytest -q"],
+                [
+                    "make",
+                    "python -m pip install -r requirements.txt",
+                ],
+            )
+            self.assertTrue(
+                all(
+                    s.source.path == ".github/workflows/run-tests.yml"
+                    for s in steps
+                )
             )
 
-    def test_maintenance_commands_are_filtered_from_onboarding_workflow(self):
+    def test_non_allowlisted_commands_are_filtered_from_onboarding_workflow(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write(
@@ -136,7 +149,7 @@ class ExtractStepsTest(unittest.TestCase):
                 "  test:\n"
                 "    steps:\n"
                 "      - run: pip install -e .\n"
-                "      - run: gh issue close 123\n"
+                "      - run: GH_TOKEN=secret gh issue close 123\n"
                 "      - run: pytest -q\n",
             )
 
@@ -147,7 +160,7 @@ class ExtractStepsTest(unittest.TestCase):
                 ["pip install -e .", "pytest -q"],
             )
 
-    def test_maintenance_job_is_skipped_inside_a_generic_workflow(self):
+    def test_job_name_does_not_filter_allowlisted_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write(
@@ -156,7 +169,24 @@ class ExtractStepsTest(unittest.TestCase):
                 "jobs:\n"
                 "  maintenance:\n"
                 "    steps:\n"
-                "      - run: python cleanup.py\n"
+                "      - run: pip install -e .\n"
+                "      - run: pytest -q\n",
+            )
+
+            steps = extract_steps(root, detect_project(root))
+
+            self.assertEqual(
+                [s.command for s in steps],
+                ["pip install -e .", "pytest -q"],
+            )
+
+    def test_release_named_workflow_with_onboarding_commands_is_captured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                ".github/workflows/release-tests.yml",
+                "jobs:\n"
                 "  test:\n"
                 "    steps:\n"
                 "      - run: pip install -e .\n"
@@ -168,6 +198,12 @@ class ExtractStepsTest(unittest.TestCase):
             self.assertEqual(
                 [s.command for s in steps],
                 ["pip install -e .", "pytest -q"],
+            )
+            self.assertTrue(
+                all(
+                    s.source.path == ".github/workflows/release-tests.yml"
+                    for s in steps
+                )
             )
 
     def test_duplicate_commands_keep_the_higher_priority_source(self):
@@ -222,7 +258,7 @@ class ExtractStepsTest(unittest.TestCase):
                 all(s.source.path == "azure-pipelines.yml" for s in steps)
             )
 
-    def test_azure_maintenance_job_is_skipped(self):
+    def test_azure_job_name_does_not_filter_allowlisted_commands(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write(
@@ -231,13 +267,14 @@ class ExtractStepsTest(unittest.TestCase):
                 "jobs:\n"
                 "- job: Maintenance\n"
                 "  steps:\n"
-                "  - script: python cleanup.py\n"
-                "- job: Test\n"
-                "  steps:\n"
+                "  - script: pip install -e .\n"
                 "  - script: pytest -q\n",
             )
             steps = extract_steps(root, detect_project(root))
-            self.assertEqual([s.command for s in steps], ["pytest -q"])
+            self.assertEqual(
+                [s.command for s in steps],
+                ["pip install -e .", "pytest -q"],
+            )
 
     def test_docs_code_blocks_are_captured_as_documentation_steps(self):
         with tempfile.TemporaryDirectory() as tmp:

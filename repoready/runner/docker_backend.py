@@ -16,6 +16,13 @@ from repoready.runner.local_backend import as_text
 
 DEFAULT_IMAGE = "python:3.12-slim"
 WORKDIR = "/work"
+SOURCE_DIR = "/source"
+COPY_REPO_SCRIPT = 'cp -a /source/. /work/ && cd "$1" && exec sh -lc "$2"'
+PYTHON_USER_BASE = "/tmp/repoready-python"
+PYTHON_USER_PATH = (
+    f"{PYTHON_USER_BASE}/bin:/usr/local/bin:/usr/local/sbin:"
+    "/usr/sbin:/usr/bin:/sbin:/bin"
+)
 _CAPTURE_READ_BYTES = 8192
 _CAPTURE_HEAD_CHARS = 2000
 _CAPTURE_TAIL_CHARS = 2000
@@ -96,30 +103,43 @@ def build_docker_command(
         "--pids-limit",
         "256",
         "--read-only",
-        "--storage-opt",
-        "size=2g",
         "--cpus",
         "2",
         "--memory",
         "2048m",
         "--mount",
-        f"type=bind,source={Path(repo_root).resolve()},target={WORKDIR}",
-        "--mount",
-        "type=volume,target=/usr/local/lib/python3.12/site-packages",
-        "--mount",
-        "type=volume,target=/usr/local/bin",
+        (
+            f"type=bind,source={Path(repo_root).resolve()},"
+            f"target={SOURCE_DIR},readonly"
+        ),
+        "--tmpfs",
+        f"{WORKDIR}:rw,nosuid,nodev,size=2g",
         "--tmpfs",
         "/tmp:rw,nosuid,nodev,size=512m",
         "--tmpfs",
         "/root/.cache:rw,nosuid,nodev,size=512m",
         "--env",
         "HOME=/tmp",
+        "--env",
+        "PIP_USER=1",
+        "--env",
+        f"PYTHONUSERBASE={PYTHON_USER_BASE}",
+        "--env",
+        f"PATH={PYTHON_USER_PATH}",
         "--workdir",
-        workdir,
+        WORKDIR,
     ]
     if not network:
         argv += ["--network", "none"]
-    argv += [image, "sh", "-lc", step.command]
+    argv += [
+        image,
+        "sh",
+        "-lc",
+        COPY_REPO_SCRIPT,
+        "repoready",
+        workdir,
+        step.command,
+    ]
     return argv
 
 

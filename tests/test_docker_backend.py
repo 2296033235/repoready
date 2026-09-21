@@ -51,10 +51,18 @@ class BuildDockerCommandTest(unittest.TestCase):
         self.assertEqual(argv[1], "run")
         self.assertIn("--rm", argv)
         self.assertTrue(
-            any(part.startswith("type=bind,source=") and part.endswith("target=/work") for part in argv)
+            any(
+                part.startswith("type=bind,source=")
+                and part.endswith("target=/source,readonly")
+                for part in argv
+            )
         )
-        self.assertEqual(argv[-3:-1], ["sh", "-lc"])
+        self.assertEqual(argv[argv.index("--workdir") + 1], "/work")
+        self.assertEqual(argv[-2], "/work")
         self.assertEqual(argv[-1], "pip install -e .")
+        self.assertTrue(
+            any(part.startswith("cp -a /source/. /work/") for part in argv)
+        )
 
     def test_workdir_follows_step_cwd(self):
         step = Step(
@@ -66,7 +74,8 @@ class BuildDockerCommandTest(unittest.TestCase):
         argv = build_docker_command(
             Path("/tmp/repo"), step, DEFAULT_IMAGE, Limits(), network=True
         )
-        self.assertEqual(argv[argv.index("--workdir") + 1], "/work/subdir")
+        self.assertEqual(argv[argv.index("--workdir") + 1], "/work")
+        self.assertEqual(argv[argv.index("-lc") + 3], "/work/subdir")
 
     def test_safe_nested_cwd_is_normalised(self):
         step = Step(
@@ -78,7 +87,8 @@ class BuildDockerCommandTest(unittest.TestCase):
         argv = build_docker_command(
             Path("/tmp/repo"), step, DEFAULT_IMAGE, Limits(), network=True
         )
-        self.assertEqual(argv[argv.index("--workdir") + 1], "/work/pkg")
+        self.assertEqual(argv[argv.index("--workdir") + 1], "/work")
+        self.assertEqual(argv[argv.index("-lc") + 3], "/work/pkg")
 
     def test_parent_directory_cwd_is_rejected(self):
         step = Step(
@@ -161,21 +171,31 @@ class BuildDockerCommandTest(unittest.TestCase):
         )
         self.assertEqual(argv[argv.index("--pids-limit") + 1], "256")
         self.assertIn("--read-only", argv)
-        self.assertEqual(argv[argv.index("--storage-opt") + 1], "size=2g")
-        self.assertIn("--tmpfs", argv)
+        self.assertNotIn("--storage-opt", argv)
+        tmpfs = [
+            argv[index + 1]
+            for index, part in enumerate(argv)
+            if part == "--tmpfs"
+        ]
+        self.assertIn("/work:rw,nosuid,nodev,size=2g", tmpfs)
+        self.assertIn("/tmp:rw,nosuid,nodev,size=512m", tmpfs)
         mounts = [
             argv[index + 1]
             for index, part in enumerate(argv)
             if part == "--mount"
         ]
-        self.assertTrue(any("target=/work" in mount for mount in mounts))
         self.assertTrue(
             any(
-                "target=/usr/local/lib/python3.12/site-packages" in mount
+                "target=/source,readonly" in mount
                 for mount in mounts
             )
         )
-        self.assertTrue(any("target=/usr/local/bin" in mount for mount in mounts))
+        self.assertFalse(any("type=volume" in mount for mount in mounts))
+        self.assertEqual(argv[argv.index("PIP_USER=1") - 1], "--env")
+        self.assertEqual(
+            argv[argv.index("PYTHONUSERBASE=/tmp/repoready-python") - 1],
+            "--env",
+        )
 
 
 class DockerBackendExecuteTest(unittest.TestCase):
