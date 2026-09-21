@@ -269,10 +269,12 @@ repoready doctor
 ```text
 repoready/
   docs/superpowers/specs/     设计文档
-  src/repoready/
+  repoready/                  包目录放在仓库根,clone 后即可 python -m repoready 运行
     __main__.py               python -m repoready 入口
     cli.py                    argparse 命令定义
-    probe/                    探测层:识别、抽取、数据模型
+    models.py                 共享数据模型(被 runner / attribution / report 共用)
+    doctor.py                 运行环境自检
+    probe/                    探测层:项目识别、步骤抽取
     runner/                   执行层:后端协议、docker、local、执行器
     attribution/              归因:规则、LLM、证据校验
     report/                   报告:json、markdown、html
@@ -280,6 +282,7 @@ repoready/
   tests/                      unittest 测试
   reports/                    生成的报告输出目录
   scripts/                    辅助脚本
+  pyproject.toml              仅用于可选的 pip 安装,运行时不依赖它
 ```
 
 ## 12. 测试策略
