@@ -140,20 +140,19 @@ def _read_output(output: BinaryIO) -> str:
     return as_text(output.read())
 
 
-def _wait_for_process(process: subprocess.Popen, timeout_s: float) -> bool:
+def _wait_for_process(process: subprocess.Popen, timeout_s: float) -> None:
     try:
         process.wait(timeout=timeout_s)
-        return True
     except subprocess.TimeoutExpired:
-        return False
+        pass
 
 
 def _terminate_process_tree(
     process: subprocess.Popen, job: Optional[_WindowsJob]
-) -> bool:
+) -> None:
     if os.name == "nt":
         if job is not None and job.terminate():
-            return True
+            return
 
         try:
             completed = subprocess.run(
@@ -167,23 +166,21 @@ def _terminate_process_tree(
             pass
         else:
             if completed.returncode == 0:
-                return True
+                return
 
         try:
             process.kill()
         except OSError:
             pass
-        return False
+        return
 
     try:
         os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-        return True
     except OSError:
         try:
             process.kill()
         except OSError:
             pass
-        return False
 
 
 class LocalBackend:
@@ -249,8 +246,8 @@ class LocalBackend:
             try:
                 process.wait(timeout=limits.timeout_s)
             except subprocess.TimeoutExpired:
-                terminated = _terminate_process_tree(process, job)
-                exited = _wait_for_process(process, _POST_KILL_WAIT_S)
+                _terminate_process_tree(process, job)
+                _wait_for_process(process, _POST_KILL_WAIT_S)
                 elapsed = int((time.monotonic() - started) * 1000)
                 return ExecOutcome(
                     exit_code=None,
@@ -258,9 +255,9 @@ class LocalBackend:
                     stdout=_read_output(stdout_file),
                     stderr=_read_output(stderr_file),
                     blocked_reason=(
-                        "timeout"
-                        if terminated and exited
-                        else "timeout_termination_unconfirmed"
+                        "timeout_termination_unconfirmed"
+                        if os.name == "nt"
+                        else "timeout"
                     ),
                 )
 

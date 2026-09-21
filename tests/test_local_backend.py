@@ -1,3 +1,4 @@
+import os
 import sys
 import tempfile
 import time
@@ -7,6 +8,10 @@ from pathlib import Path
 from repoready.models import SourceRef, Step
 from repoready.runner.base import Limits
 from repoready.runner.local_backend import LocalBackend
+
+TIMEOUT_REASON = (
+    "timeout_termination_unconfirmed" if os.name == "nt" else "timeout"
+)
 
 
 def make_step(command: str) -> Step:
@@ -84,32 +89,45 @@ class LocalBackendTest(unittest.TestCase):
             )
             elapsed = time.monotonic() - started
             self.assertIsNone(outcome.exit_code)
-            self.assertEqual(outcome.blocked_reason, "timeout")
+            self.assertEqual(outcome.blocked_reason, TIMEOUT_REASON)
             self.assertLess(elapsed, 3.0)
 
     def test_timeout_terminates_child_that_ignores_sigbreak(self):
         with tempfile.TemporaryDirectory() as tmp:
-            backend = LocalBackend()
-            backend.prepare(Path(tmp))
-            code = (
-                "import signal, time; "
-                "signal.signal(getattr(signal, 'SIGBREAK', signal.SIGTERM), "
-                "signal.SIG_IGN); "
-                "time.sleep(10)"
+            root = Path(tmp)
+            (root / "heartbeat.py").write_text(
+                "import signal\n"
+                "import time\n"
+                "from pathlib import Path\n"
+                "\n"
+                'signal.signal(getattr(signal, "SIGBREAK", signal.SIGTERM), '
+                "signal.SIG_IGN)\n"
+                'marker = Path("heartbeat.txt")\n'
+                "end = time.monotonic() + 10\n"
+                "while time.monotonic() < end:\n"
+                '    with marker.open("a", encoding="utf-8") as output:\n'
+                '        output.write("x\\n")\n'
+                "    time.sleep(0.05)\n",
+                encoding="utf-8",
             )
+            backend = LocalBackend()
+            backend.prepare(root)
             started = time.monotonic()
             outcome = backend.execute(
-                make_step(f'"{sys.executable}" -c "{code}"'),
+                make_step(f'"{sys.executable}" "heartbeat.py"'),
                 Limits(timeout_s=1),
                 network=True,
             )
             elapsed = time.monotonic() - started
+            marker = root / "heartbeat.txt"
+            self.assertTrue(marker.exists())
+            size_at_return = marker.stat().st_size
+            time.sleep(0.5)
             self.assertIsNone(outcome.exit_code)
-            self.assertIn(
-                outcome.blocked_reason,
-                ("timeout", "timeout_termination_unconfirmed"),
-            )
+            self.assertEqual(outcome.blocked_reason, TIMEOUT_REASON)
             self.assertLess(elapsed, 3.0)
+            self.assertGreater(size_at_return, 0)
+            self.assertEqual(marker.stat().st_size, size_at_return)
 
 
 if __name__ == "__main__":
