@@ -11,6 +11,7 @@ README_NAMES = ("README.md", "README.rst", "CONTRIBUTING.md")
 SHELL_LANGUAGES = {"bash", "sh", "shell", "console", "zsh", ""}
 
 RUN_KEY = re.compile(r"^(?P<indent>[ \t]*)(?:-[ \t]+)?run:[ \t]*(?P<rest>.*)$")
+STEPS_KEY = re.compile(r"^(?P<indent>[ \t]*)steps:[ \t]*(?P<rest>.*)$")
 COMMAND_PREFIXES = (
     "pip ",
     "python ",
@@ -22,6 +23,9 @@ COMMAND_PREFIXES = (
     "npm ",
     "yarn ",
     "uv ",
+)
+RST_DIRECTIVE = re.compile(
+    r"^(?P<indent>[ \t]*)\.\.\s+(?:code-block|code)::[ \t]*(?P<lang>[^ \t]*)[ \t]*$"
 )
 
 
@@ -40,10 +44,25 @@ def extract_from_workflows(root: Path) -> list[Step]:
     for path in _workflow_files(root):
         rel = path.relative_to(root).as_posix()
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        steps_indent: int | None = None
         index = 0
         while index < len(lines):
-            match = RUN_KEY.match(lines[index])
+            line = lines[index]
+            if line.strip():
+                indent = len(line) - len(line.lstrip())
+                if steps_indent is not None and indent <= steps_indent:
+                    steps_indent = None
+                steps_match = STEPS_KEY.match(line)
+                if steps_match:
+                    steps_indent = len(steps_match.group("indent"))
+                    index += 1
+                    continue
+
+            match = RUN_KEY.match(line)
             if not match:
+                index += 1
+                continue
+            if steps_indent is None or len(match.group("indent")) <= steps_indent:
                 index += 1
                 continue
 
@@ -74,6 +93,61 @@ def extract_from_workflows(root: Path) -> list[Step]:
     ]
 
 
+def _shell_command(raw: str) -> str | None:
+    command = raw.strip().lstrip("$ ").strip()
+    if not command or command.startswith("#"):
+        return None
+    if not command.startswith(COMMAND_PREFIXES):
+        return None
+    return command
+
+
+def _markdown_code_lines(lines: list[str]) -> list[tuple[int, str]]:
+    collected: list[tuple[int, str]] = []
+    in_block = False
+    block_is_shell = False
+    for number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if not in_block:
+                language = stripped[3:].strip().lower()
+                in_block = True
+                block_is_shell = language in SHELL_LANGUAGES
+            else:
+                in_block = False
+                block_is_shell = False
+            continue
+        if in_block and block_is_shell:
+            collected.append((number, line))
+    return collected
+
+
+def _rst_code_lines(lines: list[str]) -> list[tuple[int, str]]:
+    collected: list[tuple[int, str]] = []
+    index = 0
+    while index < len(lines):
+        match = RST_DIRECTIVE.match(lines[index])
+        if not match:
+            index += 1
+            continue
+        directive_indent = len(match.group("indent"))
+        language = match.group("lang").strip().lower()
+        index += 1
+        if language not in SHELL_LANGUAGES:
+            continue
+        while index < len(lines):
+            line = lines[index]
+            if not line.strip():
+                index += 1
+                continue
+            indent = len(line) - len(line.lstrip())
+            if indent <= directive_indent:
+                break
+            collected.append((index + 1, line))
+            index += 1
+    return collected
+
+
 def extract_from_readme(root: Path) -> list[Step]:
     steps: list[Step] = []
     for name in README_NAMES:
@@ -81,25 +155,10 @@ def extract_from_readme(root: Path) -> list[Step]:
         if not path.is_file():
             continue
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        in_block = False
-        block_is_shell = False
-        for number, line in enumerate(lines, start=1):
-            stripped = line.strip()
-            if stripped.startswith("```"):
-                if not in_block:
-                    language = stripped[3:].strip().lower()
-                    in_block = True
-                    block_is_shell = language in SHELL_LANGUAGES
-                else:
-                    in_block = False
-                    block_is_shell = False
-                continue
-            if not in_block or not block_is_shell:
-                continue
-            command = stripped.lstrip("$ ").strip()
-            if not command or command.startswith("#"):
-                continue
-            if not command.startswith(COMMAND_PREFIXES):
+        code_lines = _markdown_code_lines(lines) + _rst_code_lines(lines)
+        for number, raw in sorted(code_lines):
+            command = _shell_command(raw)
+            if command is None:
                 continue
             steps.append(
                 Step(

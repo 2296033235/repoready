@@ -46,6 +46,29 @@ class ExtractStepsTest(unittest.TestCase):
                 ["pip install -r requirements.txt", "pytest -q"],
             )
 
+    def test_run_key_outside_steps_block_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n  test:\n    container:\n      run:\n        image: python:3.12\n",
+            )
+            steps = extract_steps(root, detect_project(root))
+            self.assertEqual(steps, [])
+
+    def test_sibling_run_key_under_a_step_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                ".github/workflows/ci.yml",
+                "steps:\n  - name: Run tests\n    run: pytest -q\n",
+            )
+            steps = extract_steps(root, detect_project(root))
+            self.assertEqual([s.command for s in steps], ["pytest -q"])
+            self.assertEqual(steps[0].source.line, 3)
+
     def test_duplicate_commands_keep_the_higher_priority_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -56,6 +79,21 @@ class ExtractStepsTest(unittest.TestCase):
             pytest_steps = [s for s in steps if s.command == "pytest"]
             self.assertEqual(len(pytest_steps), 1)
             self.assertEqual(pytest_steps[0].source.kind, "ci")
+
+    def test_rst_code_block_is_captured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "README.rst",
+                "Install\n=======\n\n.. code-block:: bash\n\n   pip install -e .\n   pytest -q\n",
+            )
+            steps = extract_steps(root, detect_project(root))
+            self.assertEqual(
+                [s.command for s in steps],
+                ["pip install -e .", "pytest -q"],
+            )
+            self.assertTrue(all(s.source.kind == "readme" for s in steps))
 
     def test_inferred_steps_fill_in_when_no_documents_exist(self):
         with tempfile.TemporaryDirectory() as tmp:
