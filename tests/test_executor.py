@@ -1,9 +1,11 @@
+import tempfile
 import unittest
 from pathlib import Path
 
 from repoready.models import SourceRef, Step
 from repoready.runner.base import ExecOutcome, Limits
 from repoready.runner.executor import clip, run_steps
+from repoready.models import output_text
 
 
 def make_step(number: int, command: str) -> Step:
@@ -98,6 +100,31 @@ class RunStepsTest(unittest.TestCase):
             [make_step(1, "a")], backend, Limits(), network=True, repo_root=Path("/tmp/x")
         )
         self.assertEqual(backend.repo_root, Path("/tmp/x"))
+
+
+class FullLogPersistenceTest(unittest.TestCase):
+    def test_full_logs_are_persisted_and_middle_output_remains_usable(self):
+        text = "A" * 2500 + "\nMISSING: libexample\n" + "B" * 2500
+        backend = FakeBackend([outcome(1, stderr=text)])
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp)
+            results = run_steps(
+                [make_step(1, "make install")],
+                backend,
+                Limits(),
+                network=True,
+                log_dir=out_dir,
+            )
+
+            result = results[0]
+            self.assertNotIn("MISSING: libexample", result.stderr_head)
+            self.assertNotIn("MISSING: libexample", result.stderr_tail)
+            self.assertEqual(result.stderr_log, "logs/step-1-stderr.log")
+            self.assertEqual(
+                (out_dir / result.stderr_log).read_text(encoding="utf-8"),
+                text,
+            )
+            self.assertIn("MISSING: libexample", output_text(result, out_dir))
 
 
 if __name__ == "__main__":

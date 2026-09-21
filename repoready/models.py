@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, Optional
 
 SCHEMA_VERSION = "1"
@@ -54,6 +55,8 @@ class StepResult:
     stdout_tail: str = ""
     stderr_head: str = ""
     stderr_tail: str = ""
+    stdout_log: str = ""
+    stderr_log: str = ""
     attribution: Optional[Attribution] = None
 
 
@@ -68,10 +71,27 @@ class RunRecord:
     finished_at: str
     environment: dict
     steps: list[StepResult] = field(default_factory=list)
+    image_digest: Optional[str] = None
 
 
-def output_text(step: StepResult) -> str:
+def output_text(step: StepResult, base_dir: Path | None = None) -> str:
     """All captured output for a step, used for evidence checks."""
+    if base_dir is not None:
+        logged: list[str] = []
+        for name in (step.stdout_log, step.stderr_log):
+            if not name:
+                continue
+            try:
+                logged.append(
+                    (Path(base_dir) / name).read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                )
+            except OSError:
+                pass
+        if logged:
+            return "\n".join(part for part in logged if part)
+
     return "\n".join(
         part
         for part in (

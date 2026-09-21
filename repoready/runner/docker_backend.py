@@ -89,12 +89,31 @@ def build_docker_command(
         container_name,
         "--stop-timeout",
         str(limits.timeout_s),
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "256",
+        "--read-only",
+        "--storage-opt",
+        "size=2g",
         "--cpus",
         "2",
         "--memory",
         "2048m",
         "--mount",
         f"type=bind,source={Path(repo_root).resolve()},target={WORKDIR}",
+        "--mount",
+        "type=volume,target=/usr/local/lib/python3.12/site-packages",
+        "--mount",
+        "type=volume,target=/usr/local/bin",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,size=512m",
+        "--tmpfs",
+        "/root/.cache:rw,nosuid,nodev,size=512m",
+        "--env",
+        "HOME=/tmp",
         "--workdir",
         workdir,
     ]
@@ -111,12 +130,45 @@ class DockerBackend:
 
     def __init__(self, image: str = DEFAULT_IMAGE) -> None:
         self.image = image
+        self.image_digest: Optional[str] = None
+        self.docker_version: Optional[str] = None
         self._root: Optional[Path] = None
         self._docker_status: Optional[DockerStatus] = None
 
     def prepare(self, repo_root: Path) -> None:
         self._root = Path(repo_root).resolve()
         self._docker_status = check_docker()
+        self.docker_version = self._docker_status.server_version
+
+    def resolve_image_digest(self) -> Optional[str]:
+        if self._docker_status is None:
+            self._docker_status = check_docker()
+            self.docker_version = self._docker_status.server_version
+        if not self._docker_status.daemon_reachable:
+            return None
+        for template in ("{{index .RepoDigests 0}}", "{{.Id}}"):
+            try:
+                completed = subprocess.run(
+                    [
+                        "docker",
+                        "image",
+                        "inspect",
+                        "--format",
+                        template,
+                        self.image,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            digest = (completed.stdout or "").strip()
+            if completed.returncode == 0 and digest and digest != "<no value>":
+                self.image_digest = digest
+                return digest
+        return None
 
     def execute(self, step: Step, limits: Limits, network: bool) -> ExecOutcome:
         if self._root is None or self._docker_status is None:
@@ -130,8 +182,17 @@ class DockerBackend:
         stdout_file: Optional[BinaryIO] = None
         stderr_file: Optional[BinaryIO] = None
         try:
-            stdout_file = tempfile.TemporaryFile()
-            stderr_file = tempfile.TemporaryFile()
+            if limits.capture_dir is not None:
+                limits.capture_dir.mkdir(parents=True, exist_ok=True)
+                stdout_file = (limits.capture_dir / f"step-{step.id}-stdout.log").open(
+                    "w+b"
+                )
+                stderr_file = (limits.capture_dir / f"step-{step.id}-stderr.log").open(
+                    "w+b"
+                )
+            else:
+                stdout_file = tempfile.TemporaryFile()
+                stderr_file = tempfile.TemporaryFile()
             completed = subprocess.run(
                 argv,
                 stdout=stdout_file,
@@ -171,6 +232,14 @@ class DockerBackend:
                 stderr_file.close()
 
         elapsed = int((time.monotonic() - started) * 1000)
+        if completed.returncode == 125:
+            return ExecOutcome(
+                exit_code=None,
+                duration_ms=elapsed,
+                stdout=stdout,
+                stderr=stderr,
+                blocked_reason="docker_pre_execution_error",
+            )
         return ExecOutcome(
             exit_code=completed.returncode,
             duration_ms=elapsed,

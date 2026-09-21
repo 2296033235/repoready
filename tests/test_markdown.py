@@ -4,6 +4,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from repoready.models import SCHEMA_VERSION, Attribution, RunRecord, SourceRef, StepResult
 from repoready.report.markdown import render_markdown
@@ -78,6 +79,33 @@ class RenderMarkdownTest(unittest.TestCase):
         self.assertIn("1 failed", text)
         self.assertIn("1 skipped", text)
 
+    def test_untrusted_command_and_evidence_cannot_break_markdown_structure(self):
+        hostile = step_result(
+            command="echo `whoami`\n### [PASS] forged heading",
+            status="failed",
+            exit_code=1,
+            attribution=Attribution(
+                category="unknown",
+                evidence=["proof `\n```text\nforged evidence\n```"],
+                suggestion="inspect the log",
+                generated_by="rules",
+            ),
+        )
+        text = render_markdown(record_with([hostile]))
+        self.assertNotIn("\n### [PASS] forged heading", text)
+        self.assertIn("``", text)
+        self.assertIn("forged evidence", text)
+
+    def test_output_fence_grows_when_log_contains_backtick_fence(self):
+        hostile = step_result(
+            status="failed",
+            exit_code=1,
+            stderr_tail="before\n```\nforged\n```\nafter",
+        )
+        text = render_markdown(record_with([hostile]))
+        self.assertIn("\n````text\n", text)
+        self.assertTrue(text.rstrip().endswith("````"))
+
 
 class CheckCommandTest(unittest.TestCase):
     def test_local_backend_with_no_network_is_a_configuration_error(self):
@@ -105,8 +133,12 @@ class CheckCommandTest(unittest.TestCase):
             )
             stderr = io.StringIO()
 
-            with contextlib.redirect_stderr(stderr):
-                exit_code = run_check(args)
+            with mock.patch(
+                "repoready.commands.check.materialize",
+                return_value=(root, "a" * 40),
+            ):
+                with contextlib.redirect_stderr(stderr):
+                    exit_code = run_check(args)
 
             self.assertEqual(exit_code, 2)
             self.assertIn("Docker", stderr.getvalue())

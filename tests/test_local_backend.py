@@ -19,9 +19,36 @@ def make_step(command: str) -> Step:
 
 
 class LocalBackendTest(unittest.TestCase):
+    def test_environment_is_scrubbed_and_uses_an_independent_virtualenv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            backend = LocalBackend(venv=True)
+            backend.prepare(root)
+            previous = os.environ.get("REPOREADY_TEST_SECRET")
+            os.environ["REPOREADY_TEST_SECRET"] = "must-not-leak"
+            try:
+                command = (
+                    'python -c "'
+                    "import os, sys; "
+                    'print(os.environ.get(\'REPOREADY_TEST_SECRET\', \'scrubbed\')); '
+                    "print(sys.prefix)\""
+                )
+                outcome = backend.execute(make_step(command), Limits(), network=True)
+            finally:
+                if previous is None:
+                    os.environ.pop("REPOREADY_TEST_SECRET", None)
+                else:
+                    os.environ["REPOREADY_TEST_SECRET"] = previous
+                backend.cleanup()
+
+            self.assertEqual(outcome.exit_code, 0)
+            self.assertIn("scrubbed", outcome.stdout)
+            self.assertNotIn("must-not-leak", outcome.stdout)
+            self.assertIn("repoready-venv", outcome.stdout)
+
     def test_successful_command_reports_zero_exit_code(self):
         with tempfile.TemporaryDirectory() as tmp:
-            backend = LocalBackend()
+            backend = LocalBackend(venv=False)
             backend.prepare(Path(tmp))
             outcome = backend.execute(
                 make_step(f'"{sys.executable}" -c "print(1)"'), Limits(), network=True
@@ -32,7 +59,7 @@ class LocalBackendTest(unittest.TestCase):
 
     def test_failing_command_reports_non_zero_exit_code(self):
         with tempfile.TemporaryDirectory() as tmp:
-            backend = LocalBackend()
+            backend = LocalBackend(venv=False)
             backend.prepare(Path(tmp))
             outcome = backend.execute(
                 make_step(f'"{sys.executable}" -c "import sys; sys.exit(3)"'),
@@ -46,7 +73,7 @@ class LocalBackendTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "marker.txt").write_text("here", encoding="utf-8")
-            backend = LocalBackend()
+            backend = LocalBackend(venv=False)
             backend.prepare(root)
             code = (
                 "import os; print('FOUND' if os.path.exists('marker.txt') else 'MISSING')"
@@ -59,7 +86,7 @@ class LocalBackendTest(unittest.TestCase):
     def test_network_false_blocks_before_command_runs(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            backend = LocalBackend()
+            backend = LocalBackend(venv=False)
             backend.prepare(root)
             marker = root / "network-ran.txt"
             code = (
@@ -79,7 +106,7 @@ class LocalBackendTest(unittest.TestCase):
 
     def test_timeout_is_reported_as_blocked_not_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
-            backend = LocalBackend()
+            backend = LocalBackend(venv=False)
             backend.prepare(Path(tmp))
             started = time.monotonic()
             outcome = backend.execute(
@@ -110,7 +137,7 @@ class LocalBackendTest(unittest.TestCase):
                 "    time.sleep(0.05)\n",
                 encoding="utf-8",
             )
-            backend = LocalBackend()
+            backend = LocalBackend(venv=False)
             backend.prepare(root)
             started = time.monotonic()
             outcome = backend.execute(

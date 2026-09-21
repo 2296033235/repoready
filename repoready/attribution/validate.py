@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from repoready.models import Attribution, StepResult, output_text
 
 
@@ -15,9 +17,13 @@ def evidence_supported(evidence: list[str], outputs: list[str]) -> bool:
     return all(normalize(item) in haystack for item in usable)
 
 
-def validate_attribution(candidate: Attribution, step: StepResult) -> Attribution:
+def validate_attribution(
+    candidate: Attribution, step: StepResult, base_dir: Path | None = None
+) -> Attribution:
     """Downgrade to unknown unless every quoted line really appears in the output."""
-    if not evidence_supported(list(candidate.evidence), [output_text(step)]):
+    if not evidence_supported(
+        list(candidate.evidence), [output_text(step, base_dir)]
+    ):
         return Attribution(
             category="unknown",
             evidence=[],

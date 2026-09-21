@@ -26,6 +26,11 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument(
         "--no-network", action="store_true", help="run steps without network access"
     )
+    check.add_argument(
+        "--allow-local-network",
+        action="store_true",
+        help="explicitly allow network access in the weakly isolated local backend",
+    )
 
     subparsers.add_parser("doctor", help="check the local environment")
 

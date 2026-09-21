@@ -16,7 +16,12 @@ def clip(text: str) -> tuple[str, str]:
     return text[:HEAD_CHARS], text[-TAIL_CHARS:]
 
 
-def _to_result(step: Step, outcome: ExecOutcome) -> StepResult:
+def _to_result(
+    step: Step,
+    outcome: ExecOutcome,
+    stdout_log: str = "",
+    stderr_log: str = "",
+) -> StepResult:
     if outcome.blocked_reason is not None:
         status = "blocked"
     elif outcome.exit_code == 0:
@@ -38,6 +43,8 @@ def _to_result(step: Step, outcome: ExecOutcome) -> StepResult:
         stdout_tail=stdout_tail,
         stderr_head=stderr_head,
         stderr_tail=stderr_tail,
+        stdout_log=stdout_log,
+        stderr_log=stderr_log,
     )
 
 
@@ -58,6 +65,7 @@ def run_steps(
     limits: Limits,
     network: bool,
     repo_root: Path = Path("."),
+    log_dir: Path | None = None,
 ) -> list[StepResult]:
     """Execute steps in order; the first failure skips everything after it.
 
@@ -67,13 +75,32 @@ def run_steps(
     backend.prepare(repo_root)
     results: list[StepResult] = []
     halted = False
+    capture_dir: Path | None = None
+    if log_dir is not None:
+        capture_dir = Path(log_dir) / "logs"
+        capture_dir.mkdir(parents=True, exist_ok=True)
     try:
         for step in steps:
             if halted:
                 results.append(_skipped_result(step))
                 continue
-            outcome = backend.execute(step, limits, network)
-            result = _to_result(step, outcome)
+            step_limits = Limits(
+                timeout_s=limits.timeout_s,
+                capture_dir=capture_dir,
+            )
+            outcome = backend.execute(step, step_limits, network)
+            stdout_log = ""
+            stderr_log = ""
+            if capture_dir is not None and log_dir is not None:
+                stdout_path = capture_dir / f"step-{step.id}-stdout.log"
+                stderr_path = capture_dir / f"step-{step.id}-stderr.log"
+                if not stdout_path.exists():
+                    stdout_path.write_text(outcome.stdout, encoding="utf-8")
+                if not stderr_path.exists():
+                    stderr_path.write_text(outcome.stderr, encoding="utf-8")
+                stdout_log = stdout_path.relative_to(Path(log_dir)).as_posix()
+                stderr_log = stderr_path.relative_to(Path(log_dir)).as_posix()
+            result = _to_result(step, outcome, stdout_log, stderr_log)
             results.append(result)
             if result.status in HALTING_STATUSES:
                 halted = True

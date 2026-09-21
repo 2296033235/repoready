@@ -14,6 +14,8 @@ PACKAGE_MANAGER_PRECEDENCE = (
 )
 
 PYTHON_SIGNAL_EXTRAS = (
+    ".python-version",
+    "Makefile",
     "requirements-dev.txt",
     "tox.ini",
 )
@@ -43,7 +45,12 @@ def detect_project(root: Path) -> ProjectProfile:
     signals: list[str] = []
     languages: list[str] = []
 
-    for name in PYTHON_SIGNALS:
+    python_signals = list(PYTHON_SIGNALS)
+    for path in sorted(root.glob("requirements*.txt")):
+        if path.is_file() and path.name not in python_signals:
+            python_signals.append(path.name)
+
+    for name in python_signals:
         if (root / name).is_file():
             signals.append(name)
     if signals:
@@ -60,6 +67,10 @@ def detect_project(root: Path) -> ProjectProfile:
         if (root / name).is_file():
             package_manager = manager
             break
+    if package_manager is None and any(
+        (root / name).is_file() for name in python_signals if name.endswith(".txt")
+    ):
+        package_manager = "pip"
 
     return ProjectProfile(
         languages=tuple(languages),

@@ -1,4 +1,5 @@
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -148,6 +149,34 @@ class BuildDockerCommandTest(unittest.TestCase):
             second[second.index("--name") + 1],
         )
 
+    def test_container_is_hardened_and_has_targeted_writable_mounts(self):
+        argv = build_docker_command(
+            Path("/tmp/repo"), self.step, DEFAULT_IMAGE, Limits(), network=True
+        )
+
+        self.assertEqual(argv[argv.index("--cap-drop") + 1], "ALL")
+        self.assertEqual(
+            argv[argv.index("--security-opt") + 1],
+            "no-new-privileges",
+        )
+        self.assertEqual(argv[argv.index("--pids-limit") + 1], "256")
+        self.assertIn("--read-only", argv)
+        self.assertEqual(argv[argv.index("--storage-opt") + 1], "size=2g")
+        self.assertIn("--tmpfs", argv)
+        mounts = [
+            argv[index + 1]
+            for index, part in enumerate(argv)
+            if part == "--mount"
+        ]
+        self.assertTrue(any("target=/work" in mount for mount in mounts))
+        self.assertTrue(
+            any(
+                "target=/usr/local/lib/python3.12/site-packages" in mount
+                for mount in mounts
+            )
+        )
+        self.assertTrue(any("target=/usr/local/bin" in mount for mount in mounts))
+
 
 class DockerBackendExecuteTest(unittest.TestCase):
     def setUp(self):
@@ -181,6 +210,30 @@ class DockerBackendExecuteTest(unittest.TestCase):
         self.assertIsNone(first.exit_code)
         self.assertIsNone(second.exit_code)
 
+    def test_image_digest_is_resolved_with_docker_inspect(self):
+        completed = mock.Mock(
+            returncode=0,
+            stdout="python@sha256:abc123\n",
+            stderr="",
+        )
+        with mock.patch(
+            "repoready.runner.docker_backend.check_docker",
+            return_value=docker_status(reachable=True),
+        ):
+            with mock.patch(
+                "repoready.runner.docker_backend.subprocess.run",
+                return_value=completed,
+            ) as run:
+                backend = DockerBackend()
+                backend.prepare(Path("/tmp/repo"))
+                digest = backend.resolve_image_digest()
+
+        self.assertEqual(digest, "python@sha256:abc123")
+        self.assertEqual(
+            run.call_args.args[0][:4],
+            ["docker", "image", "inspect", "--format"],
+        )
+
     def test_container_permission_denied_is_a_normal_failure(self):
         def fake_run(argv, **kwargs):
             kwargs["stdout"].write(b"")
@@ -202,6 +255,28 @@ class DockerBackendExecuteTest(unittest.TestCase):
         self.assertEqual(outcome.exit_code, 1)
         self.assertIsNone(outcome.blocked_reason)
         self.assertEqual(outcome.stderr, "permission denied")
+
+    def test_docker_cli_exit_125_is_blocked_because_the_step_never_ran(self):
+        def fake_run(argv, **kwargs):
+            kwargs["stdout"].write(b"")
+            kwargs["stderr"].write(b"docker: invalid reference format")
+            return FakeCompleted(returncode=125)
+
+        with mock.patch(
+            "repoready.runner.docker_backend.check_docker",
+            return_value=docker_status(reachable=True),
+        ):
+            with mock.patch(
+                "repoready.runner.docker_backend.subprocess.run",
+                side_effect=fake_run,
+            ):
+                backend = DockerBackend()
+                backend.prepare(Path("/tmp/repo"))
+                outcome = backend.execute(self.step, Limits(), network=True)
+
+        self.assertIsNone(outcome.exit_code)
+        self.assertEqual(outcome.blocked_reason, "docker_pre_execution_error")
+        self.assertIn("invalid reference format", outcome.stderr)
 
     def test_timeout_uses_real_deadline_and_force_removes_container(self):
         calls = []
@@ -293,6 +368,45 @@ class DockerBackendExecuteTest(unittest.TestCase):
         self.assertEqual(stderr_tail, "F" * 2000)
         self.assertLess(len(outcome.stdout), 10_000)
         self.assertLess(len(outcome.stderr), 10_000)
+
+    def test_capture_directory_keeps_complete_untruncated_logs(self):
+        stdout = b"A" * 100_000 + b"MIDDLE-OUT" + b"Z" * 100_000
+        stderr = b"E" * 100_000 + b"MIDDLE-ERR" + b"F" * 100_000
+
+        def fake_run(argv, **kwargs):
+            kwargs["stdout"].write(stdout)
+            kwargs["stderr"].write(stderr)
+            return FakeCompleted(returncode=0)
+
+        with mock.patch(
+            "repoready.runner.docker_backend.check_docker",
+            return_value=docker_status(reachable=True),
+        ):
+            with mock.patch(
+                "repoready.runner.docker_backend.subprocess.run",
+                side_effect=fake_run,
+            ):
+                backend = DockerBackend()
+                backend.prepare(Path("/tmp/repo"))
+                with tempfile.TemporaryDirectory() as tmp:
+                    capture = Path(tmp)
+                    outcome = backend.execute(
+                        self.step,
+                        Limits(capture_dir=capture),
+                        network=True,
+                    )
+
+                    self.assertEqual(
+                        (capture / "step-1-stdout.log").read_bytes(),
+                        stdout,
+                    )
+                    self.assertEqual(
+                        (capture / "step-1-stderr.log").read_bytes(),
+                        stderr,
+                    )
+
+        self.assertNotIn("MIDDLE-OUT", outcome.stdout)
+        self.assertNotIn("MIDDLE-ERR", outcome.stderr)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from repoready.models import Step
 @dataclass(frozen=True)
 class Limits:
     timeout_s: int = 600
+    capture_dir: Optional[Path] = None
 
 
 @dataclass(frozen=True)

@@ -77,8 +77,8 @@ def check_docker(
             docker_host=os.environ.get("DOCKER_HOST"),
             detail="docker CLI not found on PATH",
             hint=(
-                "Docker is optional: repoready falls back to the local backend. "
-                "Install Docker Desktop if you want container isolation."
+                "Docker is strongly recommended. The local backend is not used "
+                "automatically; pass --backend local to opt in explicitly."
             ),
         )
 
@@ -119,7 +119,7 @@ def run_doctor(
     if status.cli_present and status.daemon_reachable:
         print(f"docker {status.server_version}  [ok]", file=out)
     elif not status.cli_present:
-        print("docker  [not installed - local backend will be used]", file=out)
+        print("docker  [not installed - local backend requires explicit opt-in]", file=out)
     else:
         print(f"docker daemon  [unreachable: {status.detail}]", file=out)
 

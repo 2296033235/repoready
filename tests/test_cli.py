@@ -1,3 +1,5 @@
+import contextlib
+import io
 import unittest
 
 from repoready.cli import build_parser, main
@@ -25,7 +27,9 @@ class CliSmokeTest(unittest.TestCase):
         self.assertFalse(args.no_network)
 
     def test_main_without_args_returns_usage_error_code(self):
-        self.assertEqual(main([]), 2)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(main([]), 2)
 
 
 if __name__ == "__main__":

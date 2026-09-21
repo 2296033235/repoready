@@ -32,18 +32,45 @@ class ExtractStepsTest(unittest.TestCase):
             self.assertEqual(steps[0].source.line, 4)
             self.assertEqual(steps[1].source.kind, "readme")
 
-    def test_multi_line_run_block_is_captured_as_separate_commands(self):
+    def test_multi_line_run_block_is_captured_as_one_shell_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write(
                 root,
                 ".github/workflows/ci.yml",
-                "steps:\n  - run: |\n      pip install -r requirements.txt\n      pytest -q\n",
+                "steps:\n"
+                "  - run: |\n"
+                "      cd package\n"
+                "      export EXAMPLE_FLAG=1\n"
+                "      pip install -r requirements.txt && \\\n"
+                "        pytest -q\n",
+            )
+            steps = extract_steps(root, detect_project(root))
+            self.assertEqual(len(steps), 1)
+            self.assertEqual(
+                steps[0].command,
+                "cd package\n"
+                "export EXAMPLE_FLAG=1\n"
+                "pip install -r requirements.txt && \\\n"
+                "  pytest -q",
+            )
+            self.assertEqual(steps[0].source.line, 2)
+
+    def test_folded_run_block_uses_yaml_folding_semantics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                ".github/workflows/ci.yml",
+                "steps:\n"
+                "  - run: >\n"
+                "      pip install -r requirements.txt &&\n"
+                "      pytest -q\n",
             )
             steps = extract_steps(root, detect_project(root))
             self.assertEqual(
                 [s.command for s in steps],
-                ["pip install -r requirements.txt", "pytest -q"],
+                ["pip install -r requirements.txt && pytest -q"],
             )
 
     def test_run_key_outside_steps_block_is_ignored(self):
@@ -69,6 +96,80 @@ class ExtractStepsTest(unittest.TestCase):
             self.assertEqual([s.command for s in steps], ["pytest -q"])
             self.assertEqual(steps[0].source.line, 3)
 
+    def test_maintenance_workflow_commands_are_not_extracted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                ".github/workflows/close-issues.yml",
+                "name: Close inactive issues\n"
+                "jobs:\n"
+                "  close:\n"
+                "    steps:\n"
+                "      - run: gh issue close 123\n"
+                "      - run: gh issue lock 123\n",
+            )
+            write(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n"
+                "  test:\n"
+                "    steps:\n"
+                "      - run: pip install -e .\n"
+                "      - run: pytest -q\n",
+            )
+
+            steps = extract_steps(root, detect_project(root))
+
+            self.assertEqual(
+                [s.command for s in steps],
+                ["pip install -e .", "pytest -q"],
+            )
+
+    def test_maintenance_commands_are_filtered_from_onboarding_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n"
+                "  test:\n"
+                "    steps:\n"
+                "      - run: pip install -e .\n"
+                "      - run: gh issue close 123\n"
+                "      - run: pytest -q\n",
+            )
+
+            steps = extract_steps(root, detect_project(root))
+
+            self.assertEqual(
+                [s.command for s in steps],
+                ["pip install -e .", "pytest -q"],
+            )
+
+    def test_maintenance_job_is_skipped_inside_a_generic_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                ".github/workflows/ci.yml",
+                "jobs:\n"
+                "  maintenance:\n"
+                "    steps:\n"
+                "      - run: python cleanup.py\n"
+                "  test:\n"
+                "    steps:\n"
+                "      - run: pip install -e .\n"
+                "      - run: pytest -q\n",
+            )
+
+            steps = extract_steps(root, detect_project(root))
+
+            self.assertEqual(
+                [s.command for s in steps],
+                ["pip install -e .", "pytest -q"],
+            )
+
     def test_duplicate_commands_keep_the_higher_priority_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -79,6 +180,80 @@ class ExtractStepsTest(unittest.TestCase):
             pytest_steps = [s for s in steps if s.command == "pytest"]
             self.assertEqual(len(pytest_steps), 1)
             self.assertEqual(pytest_steps[0].source.kind, "ci")
+
+    def test_gitlab_ci_script_commands_are_captured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                ".gitlab-ci.yml",
+                "test:\n"
+                "  script:\n"
+                "    - pip install -e .\n"
+                "    - pytest -q\n"
+                "release:\n"
+                "  script:\n"
+                "    - twine upload dist/*\n",
+            )
+            steps = extract_steps(root, detect_project(root))
+            self.assertEqual(
+                [s.command for s in steps],
+                ["pip install -e .", "pytest -q"],
+            )
+            self.assertTrue(all(s.source.path == ".gitlab-ci.yml" for s in steps))
+
+    def test_azure_pipeline_script_commands_are_captured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "azure-pipelines.yml",
+                "steps:\n"
+                "  - script: pip install -e .\n"
+                "  - bash: pytest -q\n"
+                "  - script: az deployment group create -g demo\n",
+            )
+            steps = extract_steps(root, detect_project(root))
+            self.assertEqual(
+                [s.command for s in steps],
+                ["pip install -e .", "pytest -q"],
+            )
+            self.assertTrue(
+                all(s.source.path == "azure-pipelines.yml" for s in steps)
+            )
+
+    def test_azure_maintenance_job_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "azure-pipelines.yml",
+                "jobs:\n"
+                "- job: Maintenance\n"
+                "  steps:\n"
+                "  - script: python cleanup.py\n"
+                "- job: Test\n"
+                "  steps:\n"
+                "  - script: pytest -q\n",
+            )
+            steps = extract_steps(root, detect_project(root))
+            self.assertEqual([s.command for s in steps], ["pytest -q"])
+
+    def test_docs_code_blocks_are_captured_as_documentation_steps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "docs/install.md",
+                "# Install\n\n```bash\npip install -e .\npytest -q\n```\n",
+            )
+            steps = extract_steps(root, detect_project(root))
+            self.assertEqual(
+                [s.command for s in steps],
+                ["pip install -e .", "pytest -q"],
+            )
+            self.assertTrue(all(s.source.kind == "readme" for s in steps))
+            self.assertTrue(all(s.source.path == "docs/install.md" for s in steps))
 
     def test_rst_code_block_is_captured(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,6 +280,16 @@ class ExtractStepsTest(unittest.TestCase):
             self.assertIn("pip install -e .", commands)
             self.assertIn("python -m pytest", commands)
             self.assertTrue(all(s.source.kind == "inferred" for s in steps))
+
+    def test_inferred_requirements_uses_general_requirements_glob(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "requirements-dev.txt", "")
+            steps = extract_steps(root, detect_project(root))
+            self.assertEqual(
+                [s.command for s in steps],
+                ["pip install -r requirements-dev.txt"],
+            )
 
     def test_steps_are_numbered_from_one(self):
         with tempfile.TemporaryDirectory() as tmp:

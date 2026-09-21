@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from repoready.models import Attribution, StepResult, output_text
@@ -90,11 +91,13 @@ def _matching_line(text: str, needle: str) -> Optional[str]:
     return None
 
 
-def classify(step: StepResult) -> Optional[Attribution]:
+def classify(
+    step: StepResult, base_dir: Path | None = None
+) -> Optional[Attribution]:
     if step.status == "passed":
         return None
 
-    text = output_text(step)
+    text = output_text(step, base_dir)
     lowered = text.lower()
     for category, needles in PATTERNS:
         for needle in needles:

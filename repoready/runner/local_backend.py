@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import ctypes
 import os
+import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -15,6 +17,31 @@ from repoready.runner.base import ExecOutcome, Limits
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _POST_KILL_WAIT_S = 2.0
+_ENV_ALLOWLIST = {
+    "APPDATA",
+    "COMSPEC",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "SHELL",
+    "SYSTEMROOT",
+    "TEMP",
+    "TERM",
+    "TMP",
+    "USERPROFILE",
+    "WINDIR",
+}
 
 
 class _JobObjectBasicLimitInformation(ctypes.Structure):
@@ -140,6 +167,14 @@ def _read_output(output: BinaryIO) -> str:
     return as_text(output.read())
 
 
+def _scrubbed_environment() -> dict[str, str]:
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() in _ENV_ALLOWLIST
+    }
+
+
 def _wait_for_process(process: subprocess.Popen, timeout_s: float) -> None:
     try:
         process.wait(timeout=timeout_s)
@@ -188,11 +223,36 @@ class LocalBackend:
 
     name = "local"
 
-    def __init__(self) -> None:
+    def __init__(self, venv: bool = True) -> None:
+        self._venv = venv
         self._root: Optional[Path] = None
+        self._venv_dir: Optional[Path] = None
+        self._environment: dict[str, str] = _scrubbed_environment()
 
     def prepare(self, repo_root: Path) -> None:
         self._root = Path(repo_root).resolve()
+        self._environment = _scrubbed_environment()
+        if not self._venv:
+            return
+
+        self._venv_dir = self._root.parent / "repoready-venv"
+        if not (self._venv_dir / "pyvenv.cfg").is_file():
+            subprocess.run(
+                [sys.executable, "-m", "venv", str(self._venv_dir)],
+                check=True,
+                env=self._environment,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+        scripts = "Scripts" if os.name == "nt" else "bin"
+        bin_dir = self._venv_dir / scripts
+        self._environment["VIRTUAL_ENV"] = str(self._venv_dir)
+        self._environment["PATH"] = str(bin_dir) + os.pathsep + self._environment.get(
+            "PATH", ""
+        )
+        self._environment["PYTHONNOUSERSITE"] = "1"
 
     def execute(self, step: Step, limits: Limits, network: bool) -> ExecOutcome:
         if self._root is None:
@@ -214,8 +274,17 @@ class LocalBackend:
         stderr_file: Optional[BinaryIO] = None
         process: Optional[subprocess.Popen] = None
         try:
-            stdout_file = tempfile.TemporaryFile()
-            stderr_file = tempfile.TemporaryFile()
+            if limits.capture_dir is not None:
+                limits.capture_dir.mkdir(parents=True, exist_ok=True)
+                stdout_file = (limits.capture_dir / f"step-{step.id}-stdout.log").open(
+                    "w+b"
+                )
+                stderr_file = (limits.capture_dir / f"step-{step.id}-stderr.log").open(
+                    "w+b"
+                )
+            else:
+                stdout_file = tempfile.TemporaryFile()
+                stderr_file = tempfile.TemporaryFile()
             try:
                 process = subprocess.Popen(
                     step.command,
@@ -223,6 +292,7 @@ class LocalBackend:
                     cwd=workdir,
                     stdout=stdout_file,
                     stderr=stderr_file,
+                    env=self._environment,
                     creationflags=(
                         subprocess.CREATE_NEW_PROCESS_GROUP
                         if os.name == "nt"
@@ -277,4 +347,8 @@ class LocalBackend:
                 stderr_file.close()
 
     def cleanup(self) -> None:
+        if self._venv_dir is not None and self._venv_dir.exists():
+            shutil.rmtree(self._venv_dir, ignore_errors=True)
         self._root = None
+        self._venv_dir = None
+        self._environment = _scrubbed_environment()

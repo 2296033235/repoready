@@ -41,6 +41,8 @@ def _step_from_dict(data: dict) -> StepResult:
         stdout_tail=data.get("stdout_tail", ""),
         stderr_head=data.get("stderr_head", ""),
         stderr_tail=data.get("stderr_tail", ""),
+        stdout_log=data.get("stdout_log", ""),
+        stderr_log=data.get("stderr_log", ""),
         attribution=_attribution_from_dict(data.get("attribution")),
     )
 
@@ -57,4 +59,5 @@ def load_run_json(path: Path) -> RunRecord:
         finished_at=data["finished_at"],
         environment=data.get("environment", {}),
         steps=[_step_from_dict(item) for item in data.get("steps", [])],
+        image_digest=data.get("image_digest"),
     )

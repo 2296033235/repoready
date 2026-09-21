@@ -36,6 +36,16 @@ class DetectProjectTest(unittest.TestCase):
             self.assertEqual(profile.languages, ("python",))
             self.assertEqual(profile.package_manager, "pip")
 
+    def test_required_python_signals_cover_version_makefile_and_requirements_globs(self):
+        for name in (".python-version", "Makefile", "requirements-dev.txt"):
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    touch(root, name)
+                    profile = detect_project(root)
+                    self.assertIn("python", profile.languages)
+                    self.assertIn(name, profile.signals)
+
     def test_node_project_is_detected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import platform
+import re
 import subprocess
 import sys
 import tempfile
@@ -20,6 +22,13 @@ from repoready.runner.executor import run_steps
 from repoready.runner.local_backend import LocalBackend
 
 
+class BackendUnavailable(RuntimeError):
+    pass
+
+
+_FULL_COMMIT = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
+
+
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).astimezone().isoformat(timespec="seconds")
 
@@ -33,37 +42,63 @@ def _head_sha(path: Path) -> str:
             timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return "unknown"
-    return completed.stdout.strip() or "unknown"
+        raise SystemExit(f"could not resolve a commit for {path}")
+    sha = completed.stdout.strip()
+    if completed.returncode != 0 or not _FULL_COMMIT.fullmatch(sha):
+        detail = completed.stderr.strip() or "not a git checkout"
+        raise SystemExit(f"could not resolve a full commit for {path}: {detail}")
+    return sha.lower()
 
 
 def materialize(repo: str, ref: str | None, workdir: Path) -> tuple[Path, str]:
     """Return the checkout path and the resolved commit SHA."""
-    if "://" in repo or repo.endswith(".git"):
-        target = workdir / "repo"
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    target = workdir / "repo"
+    source = repo
+    if "://" not in repo:
+        local = Path(repo).expanduser().resolve()
+        if local.is_dir():
+            source = str(local)
+        elif not repo.endswith(".git") and "@" not in repo:
+            raise SystemExit(f"not a directory: {local}")
+    try:
         subprocess.run(
-            ["git", "clone", "--quiet", repo, str(target)], check=True, timeout=900
+            ["git", "clone", "--quiet", source, str(target)],
+            check=True,
+            timeout=900,
+            capture_output=True,
         )
         if ref:
             subprocess.run(
                 ["git", "-C", str(target), "checkout", "--quiet", ref],
                 check=True,
                 timeout=300,
+                capture_output=True,
             )
-        return target, _head_sha(target)
-
-    local = Path(repo).expanduser().resolve()
-    if not local.is_dir():
-        raise SystemExit(f"not a directory: {local}")
-    return local, _head_sha(local)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or b"").decode("utf-8", errors="replace").strip()
+        message = detail or f"git exited with {exc.returncode}"
+        raise SystemExit(f"could not materialize {repo!r}: {message}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(f"timed out materializing {repo!r}") from exc
+    return target, _head_sha(target)
 
 
 def select_backend(name: str | None):
     if name == "local":
-        return LocalBackend()
+        return LocalBackend(venv=True)
     if name == "docker":
         return DockerBackend()
-    return DockerBackend() if check_docker().daemon_reachable else LocalBackend()
+    status = check_docker()
+    if status.daemon_reachable:
+        return DockerBackend()
+    detail = status.detail or "Docker is unavailable"
+    hint = f" {status.hint}" if status.hint else ""
+    raise BackendUnavailable(
+        f"{detail}.{hint} Local execution is not used automatically; "
+        "pass --backend local to opt in explicitly."
+    )
 
 
 def run_check(args: argparse.Namespace) -> int:
@@ -79,7 +114,31 @@ def run_check(args: argparse.Namespace) -> int:
             print("no onboarding steps found; nothing to verify", file=sys.stderr)
             return 1
 
-        backend = select_backend(args.backend)
+        try:
+            backend = select_backend(args.backend)
+        except BackendUnavailable as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        network = not args.no_network
+        if getattr(backend, "name", None) == "local":
+            allow_local_network = bool(
+                getattr(args, "allow_local_network", False)
+            )
+            if allow_local_network:
+                print(
+                    "warning: local backend runs repository commands directly "
+                    "on the host with a scrubbed environment. Prefer Docker for "
+                    "untrusted repositories.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "warning: local backend uses weak host isolation; network "
+                    "access is disabled by default. Pass --allow-local-network "
+                    "only if you trust the repository.",
+                    file=sys.stderr,
+                )
+                network = False
         if getattr(backend, "name", None) == "local" and args.no_network:
             print(
                 "error: --no-network requires Docker; the local backend cannot "
@@ -93,13 +152,16 @@ def run_check(args: argparse.Namespace) -> int:
             steps,
             backend,
             Limits(timeout_s=args.timeout),
-            network=not args.no_network,
+            network=network,
             repo_root=checkout,
+            log_dir=out_dir,
         )
+        if hasattr(backend, "resolve_image_digest"):
+            backend.resolve_image_digest()
 
     for result in results:
         if result.status in {"failed", "blocked"}:
-            result.attribution = classify(result)
+            result.attribution = classify(result, out_dir)
 
     record = RunRecord(
         schema_version=SCHEMA_VERSION,
@@ -107,9 +169,14 @@ def run_check(args: argparse.Namespace) -> int:
         commit=commit,
         backend=getattr(backend, "name", "unknown"),
         image=getattr(backend, "image", None),
+        image_digest=getattr(backend, "image_digest", None),
         started_at=started,
         finished_at=_now(),
-        environment={"python": sys.version.split()[0]},
+        environment={
+            "os": platform.platform(),
+            "python": sys.version.split()[0],
+            "docker": getattr(backend, "docker_version", None),
+        },
         steps=results,
     )
 
